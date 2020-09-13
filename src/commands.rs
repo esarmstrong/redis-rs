@@ -291,6 +291,11 @@ implement_commands! {
         cmd("SET").arg(key).arg(value)
     }
 
+    /// Set the string value of a key.
+    fn set_json<K: ToRedisArgs, V: ToRedisArgs, P: ToRedisArgs>(key: K, path: P, value: V) {
+        cmd("JSON.SET").arg(key).arg(path).arg(value)
+    }
+
     /// Sets multiple keys to their values.
     fn set_multiple<K: ToRedisArgs, V: ToRedisArgs>(items: &'a [(K, V)]) {
         cmd("MSET").arg(items)
