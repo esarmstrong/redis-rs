@@ -218,7 +218,7 @@ implement_commands! {
     }
 
     /// Set json value of a key.
-    fn set_json<V: ToRedisArgs, P: ToRedisArgs>(key: String, path: P, value: V) {
+    fn set_json(key: String, path: String, value: String) {
         cmd("JSON.SET").arg(key).arg(path).arg(value)
     }
 
