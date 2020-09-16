@@ -52,7 +52,6 @@
 //! There are a few features defined that can enable additional functionality
 //! if so desired.  Some of them are turned on by default.
 //!
-//! * `acl`: enables acl support (enabled by default)
 //! * `aio`: enables async IO support (enabled by default)
 //! * `geospatial`: enables geospatial support (enabled by default)
 //! * `script`: enables script support (enabled by default)
@@ -71,7 +70,7 @@
 //! * URL objects from the redis-url crate.
 //! * `ConnectionInfo` objects.
 //!
-//! The URL format is `redis://[<username>][:<passwd>@]<hostname>[:port][/<db>]`
+//! The URL format is `redis://[:<passwd>@]<hostname>[:port][/<db>]`
 //!
 //! If Unix socket support is available you can use a unix URL in this format:
 //!
@@ -380,15 +379,9 @@ pub use crate::types::{
 
 #[cfg(feature = "aio")]
 #[cfg_attr(docsrs, doc(cfg(feature = "aio")))]
-pub use crate::{
-    cmd::AsyncIter, commands::AsyncCommands, parser::parse_redis_value_async, types::RedisFuture,
-};
+pub use crate::{commands::AsyncCommands, parser::parse_redis_value_async, types::RedisFuture};
 
 mod macros;
-
-#[cfg(feature = "acl")]
-#[cfg_attr(docsrs, doc(cfg(feature = "acl")))]
-pub mod acl;
 
 #[cfg(feature = "aio")]
 #[cfg_attr(docsrs, doc(cfg(feature = "aio")))]
@@ -410,10 +403,6 @@ pub mod cluster;
 #[cfg(feature = "r2d2")]
 #[cfg_attr(docsrs, doc(cfg(feature = "r2d2")))]
 mod r2d2;
-
-#[cfg(feature = "streams")]
-#[cfg_attr(docsrs, doc(cfg(feature = "streams")))]
-pub mod streams;
 
 mod client;
 mod cmd;

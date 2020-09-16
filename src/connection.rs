@@ -1,8 +1,8 @@
 use std::fmt;
-use std::io::{self, Write};
+use std::io::Write;
 use std::net::{self, TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
-use std::str::{from_utf8, FromStr};
+use std::str::from_utf8;
 use std::time::Duration;
 
 use crate::cmd::{cmd, pipe, Pipeline};
@@ -14,9 +14,6 @@ use crate::types::{
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 
-#[cfg(feature = "tls")]
-use native_tls::{TlsConnector, TlsStream};
-
 static DEFAULT_PORT: u16 = 6379;
 
 /// This function takes a redis URL string and parses it into a URL
@@ -25,7 +22,7 @@ static DEFAULT_PORT: u16 = 6379;
 pub fn parse_redis_url(input: &str) -> Result<url::Url, ()> {
     match url::Url::parse(input) {
         Ok(result) => match result.scheme() {
-            "redis" | "rediss" | "redis+unix" | "unix" => Ok(result),
+            "redis" | "redis+unix" | "unix" => Ok(result),
             _ => Err(()),
         },
         Err(_) => Err(()),
@@ -41,22 +38,6 @@ pub fn parse_redis_url(input: &str) -> Result<url::Url, ()> {
 pub enum ConnectionAddr {
     /// Format for this is `(host, port)`.
     Tcp(String, u16),
-    /// Format for this is `(host, port)`.
-    TcpTls {
-        /// Hostname
-        host: String,
-        /// Port
-        port: u16,
-        /// Disable hostname verification when connecting.
-        ///
-        /// # Warning
-        ///
-        /// You should think very carefully before you use this method. If hostname
-        /// verification is not used, any valid certificate for any site will be
-        /// trusted for use from any other. This introduces a significant
-        /// vulnerability to man-in-the-middle attacks.
-        insecure: bool,
-    },
     /// Format for this is the path to the unix socket.
     Unix(PathBuf),
 }
@@ -72,7 +53,6 @@ impl ConnectionAddr {
     pub fn is_supported(&self) -> bool {
         match *self {
             ConnectionAddr::Tcp(_, _) => true,
-            ConnectionAddr::TcpTls { .. } => cfg!(feature = "tls"),
             ConnectionAddr::Unix(_) => cfg!(unix),
         }
     }
@@ -82,7 +62,6 @@ impl fmt::Display for ConnectionAddr {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match *self {
             ConnectionAddr::Tcp(ref host, port) => write!(f, "{}:{}", host, port),
-            ConnectionAddr::TcpTls { ref host, port, .. } => write!(f, "{}:{}", host, port),
             ConnectionAddr::Unix(ref path) => write!(f, "{}", path.display()),
         }
     }
@@ -95,18 +74,8 @@ pub struct ConnectionInfo {
     pub addr: Box<ConnectionAddr>,
     /// The database number to use.  This is usually `0`.
     pub db: i64,
-    /// Optionally a username that should be used for connection.
-    pub username: Option<String>,
     /// Optionally a password that should be used for connection.
     pub passwd: Option<String>,
-}
-
-impl FromStr for ConnectionInfo {
-    type Err = RedisError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.into_connection_info()
-    }
 }
 
 /// Converts an object into a connection info struct.  This allows the
@@ -132,20 +101,6 @@ impl<'a> IntoConnectionInfo for &'a str {
     }
 }
 
-impl<T> IntoConnectionInfo for (T, u16)
-where
-    T: Into<String>,
-{
-    fn into_connection_info(self) -> RedisResult<ConnectionInfo> {
-        Ok(ConnectionInfo {
-            addr: Box::new(ConnectionAddr::Tcp(self.0.into(), self.1)),
-            db: 0,
-            username: None,
-            passwd: None,
-        })
-    }
-}
-
 impl IntoConnectionInfo for String {
     fn into_connection_info(self) -> RedisResult<ConnectionInfo> {
         match parse_redis_url(&self) {
@@ -156,59 +111,20 @@ impl IntoConnectionInfo for String {
 }
 
 fn url_to_tcp_connection_info(url: url::Url) -> RedisResult<ConnectionInfo> {
-    let host = match url.host() {
-        Some(host) => host.to_string(),
-        None => fail!((ErrorKind::InvalidClientConfig, "Missing hostname")),
-    };
-    let port = url.port().unwrap_or(DEFAULT_PORT);
-    let addr = if url.scheme() == "rediss" {
-        #[cfg(feature = "tls")]
-        {
-            match url.fragment() {
-                Some("insecure") => ConnectionAddr::TcpTls {
-                    host,
-                    port,
-                    insecure: true,
-                },
-                Some(_) => fail!((
-                    ErrorKind::InvalidClientConfig,
-                    "only #insecure is supported as URL fragment"
-                )),
-                _ => ConnectionAddr::TcpTls {
-                    host,
-                    port,
-                    insecure: false,
-                },
-            }
-        }
-
-        #[cfg(not(feature = "tls"))]
-        fail!((
-            ErrorKind::InvalidClientConfig,
-            "can't connect with TLS, the feature is not enabled"
-        ));
-    } else {
-        ConnectionAddr::Tcp(host, port)
-    };
     Ok(ConnectionInfo {
-        addr: Box::new(addr),
+        addr: Box::new(ConnectionAddr::Tcp(
+            match url.host() {
+                Some(host) => host.to_string(),
+                None => fail!((ErrorKind::InvalidClientConfig, "Missing hostname")),
+            },
+            url.port().unwrap_or(DEFAULT_PORT),
+        )),
         db: match url.path().trim_matches('/') {
             "" => 0,
             path => unwrap_or!(
                 path.parse::<i64>().ok(),
                 fail!((ErrorKind::InvalidClientConfig, "Invalid database number"))
             ),
-        },
-        username: if url.username().is_empty() {
-            None
-        } else {
-            match percent_encoding::percent_decode(url.username().as_bytes()).decode_utf8() {
-                Ok(decoded) => Some(decoded.into_owned()),
-                Err(_) => fail!((
-                    ErrorKind::InvalidClientConfig,
-                    "Username is not valid UTF-8 string"
-                )),
-            }
         },
         passwd: match url.password() {
             Some(pw) => match percent_encoding::percent_decode(pw.as_bytes()).decode_utf8() {
@@ -237,7 +153,6 @@ fn url_to_unix_connection_info(url: url::Url) -> RedisResult<ConnectionInfo> {
             ),
             None => 0,
         },
-        username: Some(url.username().to_string()).filter(|user| !user.is_empty()),
         passwd: url.password().map(|pw| pw.to_string()),
     })
 }
@@ -252,25 +167,21 @@ fn url_to_unix_connection_info(_: url::Url) -> RedisResult<ConnectionInfo> {
 
 impl IntoConnectionInfo for url::Url {
     fn into_connection_info(self) -> RedisResult<ConnectionInfo> {
-        match self.scheme() {
-            "redis" | "rediss" => url_to_tcp_connection_info(self),
-            "unix" | "redis+unix" => url_to_unix_connection_info(self),
-            _ => fail!((
+        if self.scheme() == "redis" {
+            url_to_tcp_connection_info(self)
+        } else if self.scheme() == "unix" || self.scheme() == "redis+unix" {
+            url_to_unix_connection_info(self)
+        } else {
+            fail!((
                 ErrorKind::InvalidClientConfig,
                 "URL provided is not a redis URL"
-            )),
+            ));
         }
     }
 }
 
 struct TcpConnection {
     reader: TcpStream,
-    open: bool,
-}
-
-#[cfg(feature = "tls")]
-struct TcpTlsConnection {
-    reader: TlsStream<TcpStream>,
     open: bool,
 }
 
@@ -282,8 +193,6 @@ struct UnixConnection {
 
 enum ActualConnection {
     Tcp(TcpConnection),
-    #[cfg(feature = "tls")]
-    TcpTls(TcpTlsConnection),
     #[cfg(unix)]
     Unix(UnixConnection),
 }
@@ -354,67 +263,6 @@ impl ActualConnection {
                     open: true,
                 })
             }
-            #[cfg(feature = "tls")]
-            ConnectionAddr::TcpTls {
-                ref host,
-                port,
-                insecure,
-            } => {
-                let tls_connector = if insecure {
-                    TlsConnector::builder()
-                        .danger_accept_invalid_certs(true)
-                        .danger_accept_invalid_hostnames(true)
-                        .use_sni(false)
-                        .build()?
-                } else {
-                    TlsConnector::new()?
-                };
-                let host: &str = &*host;
-                let tls = match timeout {
-                    None => {
-                        let tcp = TcpStream::connect((host, port))?;
-                        tls_connector.connect(host, tcp).unwrap()
-                    }
-                    Some(timeout) => {
-                        let mut tcp = None;
-                        let mut last_error = None;
-                        for addr in (host, port).to_socket_addrs()? {
-                            match TcpStream::connect_timeout(&addr, timeout) {
-                                Ok(l) => {
-                                    tcp = Some(l);
-                                    break;
-                                }
-                                Err(e) => {
-                                    last_error = Some(e);
-                                }
-                            };
-                        }
-                        match (tcp, last_error) {
-                            (Some(tcp), _) => tls_connector.connect(host, tcp).unwrap(),
-                            (None, Some(e)) => {
-                                fail!(e);
-                            }
-                            (None, None) => {
-                                fail!((
-                                    ErrorKind::InvalidClientConfig,
-                                    "could not resolve to any addresses"
-                                ));
-                            }
-                        }
-                    }
-                };
-                ActualConnection::TcpTls(TcpTlsConnection {
-                    reader: tls,
-                    open: true,
-                })
-            }
-            #[cfg(not(feature = "tls"))]
-            ConnectionAddr::TcpTls { .. } => {
-                fail!((
-                    ErrorKind::InvalidClientConfig,
-                    "Cannot connect to TCP with TLS without the tls feature"
-                ));
-            }
             #[cfg(unix)]
             ConnectionAddr::Unix(ref path) => ActualConnection::Unix(UnixConnection {
                 sock: UnixStream::connect(path)?,
@@ -434,19 +282,6 @@ impl ActualConnection {
     pub fn send_bytes(&mut self, bytes: &[u8]) -> RedisResult<Value> {
         match *self {
             ActualConnection::Tcp(ref mut connection) => {
-                let res = connection.reader.write_all(bytes).map_err(RedisError::from);
-                match res {
-                    Err(e) => {
-                        if e.is_connection_dropped() {
-                            connection.open = false;
-                        }
-                        Err(e)
-                    }
-                    Ok(_) => Ok(Value::Okay),
-                }
-            }
-            #[cfg(feature = "tls")]
-            ActualConnection::TcpTls(ref mut connection) => {
                 let res = connection.reader.write_all(bytes).map_err(RedisError::from);
                 match res {
                     Err(e) => {
@@ -479,10 +314,6 @@ impl ActualConnection {
             ActualConnection::Tcp(TcpConnection { ref reader, .. }) => {
                 reader.set_write_timeout(dur)?;
             }
-            #[cfg(feature = "tls")]
-            ActualConnection::TcpTls(TcpTlsConnection { ref reader, .. }) => {
-                reader.get_ref().set_write_timeout(dur)?;
-            }
             #[cfg(unix)]
             ActualConnection::Unix(UnixConnection { ref sock, .. }) => {
                 sock.set_write_timeout(dur)?;
@@ -496,10 +327,6 @@ impl ActualConnection {
             ActualConnection::Tcp(TcpConnection { ref reader, .. }) => {
                 reader.set_read_timeout(dur)?;
             }
-            #[cfg(feature = "tls")]
-            ActualConnection::TcpTls(TcpTlsConnection { ref reader, .. }) => {
-                reader.get_ref().set_read_timeout(dur)?;
-            }
             #[cfg(unix)]
             ActualConnection::Unix(UnixConnection { ref sock, .. }) => {
                 sock.set_read_timeout(dur)?;
@@ -511,8 +338,6 @@ impl ActualConnection {
     pub fn is_open(&self) -> bool {
         match *self {
             ActualConnection::Tcp(TcpConnection { open, .. }) => open,
-            #[cfg(feature = "tls")]
-            ActualConnection::TcpTls(TcpTlsConnection { open, .. }) => open,
             #[cfg(unix)]
             ActualConnection::Unix(UnixConnection { open, .. }) => open,
         }
@@ -531,12 +356,8 @@ pub fn connect(
         pubsub: false,
     };
 
-    if let Some(passwd) = &connection_info.passwd {
-        let mut command = cmd("AUTH");
-        if let Some(username) = &connection_info.username {
-            command.arg(username);
-        }
-        match command.arg(passwd).query::<Value>(&mut rv) {
+    if let Some(ref passwd) = connection_info.passwd {
+        match cmd("AUTH").arg(&**passwd).query::<Value>(&mut rv) {
             Ok(Value::Okay) => {}
             _ => {
                 fail!((
@@ -730,40 +551,25 @@ impl Connection {
             ActualConnection::Tcp(TcpConnection { ref mut reader, .. }) => {
                 self.parser.parse_value(reader)
             }
-            #[cfg(feature = "tls")]
-            ActualConnection::TcpTls(TcpTlsConnection { ref mut reader, .. }) => {
-                self.parser.parse_value(reader)
-            }
             #[cfg(unix)]
             ActualConnection::Unix(UnixConnection { ref mut sock, .. }) => {
                 self.parser.parse_value(sock)
             }
         };
         // shutdown connection on protocol error
-        if let Err(e) = &result {
-            let shutdown = e.kind() == ErrorKind::ResponseError
-                || match e.as_io_error() {
-                    Some(e) => e.kind() == io::ErrorKind::UnexpectedEof,
-                    None => false,
-                };
-            if shutdown {
-                match self.con {
-                    ActualConnection::Tcp(ref mut connection) => {
-                        let _ = connection.reader.shutdown(net::Shutdown::Both);
-                        connection.open = false;
-                    }
-                    #[cfg(feature = "tls")]
-                    ActualConnection::TcpTls(ref mut connection) => {
-                        let _ = connection.reader.shutdown();
-                        connection.open = false;
-                    }
-                    #[cfg(unix)]
-                    ActualConnection::Unix(ref mut connection) => {
-                        let _ = connection.sock.shutdown(net::Shutdown::Both);
-                        connection.open = false;
-                    }
+        match result {
+            Err(ref e) if e.kind() == ErrorKind::ResponseError => match self.con {
+                ActualConnection::Tcp(ref mut connection) => {
+                    let _ = connection.reader.shutdown(net::Shutdown::Both);
+                    connection.open = false;
                 }
-            }
+                #[cfg(unix)]
+                ActualConnection::Unix(ref mut connection) => {
+                    let _ = connection.sock.shutdown(net::Shutdown::Both);
+                    connection.open = false;
+                }
+            },
+            _ => (),
         }
         result
     }
@@ -1029,107 +835,4 @@ pub fn transaction<
             }
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_redis_url() {
-        let cases = vec![
-            ("redis://127.0.0.1", true),
-            ("redis+unix:///run/redis.sock", true),
-            ("unix:///run/redis.sock", true),
-            ("http://127.0.0.1", false),
-            ("tcp://127.0.0.1", false),
-        ];
-        for (url, expected) in cases.into_iter() {
-            let res = parse_redis_url(&url);
-            assert_eq!(
-                res.is_ok(),
-                expected,
-                "Parsed result of `{}` is not expected",
-                url,
-            );
-        }
-    }
-
-    #[test]
-    fn test_url_to_tcp_connection_info() {
-        let cases = vec![
-            (
-                url::Url::parse("redis://127.0.0.1").unwrap(),
-                ConnectionInfo {
-                    addr: Box::new(ConnectionAddr::Tcp("127.0.0.1".to_string(), 6379)),
-                    db: 0,
-                    username: None,
-                    passwd: None,
-                },
-            ),
-            (
-                url::Url::parse("redis://%25johndoe%25:%23%40%3C%3E%24@example.com/2").unwrap(),
-                ConnectionInfo {
-                    addr: Box::new(ConnectionAddr::Tcp("example.com".to_string(), 6379)),
-                    db: 2,
-                    username: Some("%johndoe%".to_string()),
-                    passwd: Some("#@<>$".to_string()),
-                },
-            ),
-        ];
-        for (url, expected) in cases.into_iter() {
-            let res = url_to_tcp_connection_info(url.clone()).unwrap();
-            assert_eq!(res.addr, expected.addr, "addr of {} is not expected", url);
-            assert_eq!(res.db, expected.db, "db of {} is not expected", url);
-            assert_eq!(
-                res.username, expected.username,
-                "username of {} is not expected",
-                url
-            );
-            assert_eq!(
-                res.passwd, expected.passwd,
-                "passwd of {} is not expected",
-                url
-            );
-        }
-    }
-
-    #[test]
-    fn test_url_to_tcp_connection_info_failed() {
-        let cases = vec![
-            (url::Url::parse("redis://").unwrap(), "Missing hostname"),
-            (
-                url::Url::parse("redis://127.0.0.1/db").unwrap(),
-                "Invalid database number",
-            ),
-            (
-                url::Url::parse("redis://C3%B0@127.0.0.1").unwrap(),
-                "Username is not valid UTF-8 string",
-            ),
-            (
-                url::Url::parse("redis://:C3%B0@127.0.0.1").unwrap(),
-                "Password is not valid UTF-8 string",
-            ),
-        ];
-        for (url, expected) in cases.into_iter() {
-            let res = url_to_tcp_connection_info(url);
-            assert_eq!(
-                res.as_ref().unwrap_err().kind(),
-                crate::ErrorKind::InvalidClientConfig,
-                "{}",
-                res.as_ref().unwrap_err(),
-            );
-            assert_eq!(
-                res.as_ref().unwrap_err().to_string(),
-                expected,
-                "{}",
-                res.as_ref().unwrap_err(),
-            );
-        }
-    }
-
-    #[ignore]
-    #[test]
-    #[cfg(unix)]
-    fn test_url_to_unix_connection_info() {}
 }

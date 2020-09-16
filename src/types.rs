@@ -7,23 +7,6 @@ use std::fmt;
 use std::hash::{BuildHasher, Hash};
 use std::io;
 use std::str::{from_utf8, Utf8Error};
-use std::string::FromUtf8Error;
-
-macro_rules! invalid_type_error {
-    ($v:expr, $det:expr) => {{
-        fail!(invalid_type_error_inner!($v, $det))
-    }};
-}
-
-macro_rules! invalid_type_error_inner {
-    ($v:expr, $det:expr) => {
-        RedisError::from((
-            ErrorKind::TypeError,
-            "Response was of incompatible type",
-            format!("{:?} (response was {:?})", $det, $v),
-        ))
-    };
-}
 
 /// Helper enum that is used in some situations to describe
 /// the behavior of arguments in a numeric context.
@@ -99,21 +82,6 @@ pub enum Value {
     Okay,
 }
 
-pub struct MapIter<'a>(std::slice::Iter<'a, Value>);
-
-impl<'a> Iterator for MapIter<'a> {
-    type Item = (&'a Value, &'a Value);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        Some((self.0.next()?, self.0.next()?))
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let (low, high) = self.0.size_hint();
-        (low / 2, high.map(|h| h / 2))
-    }
-}
-
 /// Values are generally not used directly unless you are using the
 /// more low level functionality in the library.  For the most part
 /// this is hidden with the help of the `FromRedisValue` trait.
@@ -147,23 +115,6 @@ impl Value {
                 true
             }
             _ => false,
-        }
-    }
-
-    /// Returns an `&[Value]` if `self` is compatible with a sequence type
-    pub fn as_sequence(&self) -> Option<&[Value]> {
-        match self {
-            Value::Bulk(items) => Some(&items[..]),
-            Value::Nil => Some(&[]),
-            _ => None,
-        }
-    }
-
-    /// Returns an iterator of `(&Value, &Value)` if `self` is compatible with a map type
-    pub fn as_map_iter(&self) -> Option<MapIter<'_>> {
-        match self {
-            Value::Bulk(items) => Some(MapIter(items.iter())),
-            _ => None,
         }
     }
 }
@@ -240,23 +191,6 @@ impl From<Utf8Error> for RedisError {
     fn from(_: Utf8Error) -> RedisError {
         RedisError {
             repr: ErrorRepr::WithDescription(ErrorKind::TypeError, "Invalid UTF-8"),
-        }
-    }
-}
-
-#[cfg(feature = "tls")]
-impl From<native_tls::Error> for RedisError {
-    fn from(_: native_tls::Error) -> RedisError {
-        RedisError {
-            repr: ErrorRepr::WithDescription(ErrorKind::IoError, "TLS error"),
-        }
-    }
-}
-
-impl From<FromUtf8Error> for RedisError {
-    fn from(_: FromUtf8Error) -> RedisError {
-        RedisError {
-            repr: ErrorRepr::WithDescription(ErrorKind::TypeError, "Cannot convert from UTF-8"),
         }
     }
 }
@@ -389,13 +323,6 @@ impl RedisError {
         match self.kind() {
             ErrorKind::IoError => true,
             _ => false,
-        }
-    }
-
-    pub(crate) fn as_io_error(&self) -> Option<&io::Error> {
-        match &self.repr {
-            ErrorRepr::IoError(e) => Some(e),
-            _ => None,
         }
     }
 
@@ -599,20 +526,11 @@ impl InfoDict {
 pub trait RedisWrite {
     /// Accepts a serialized redis command.
     fn write_arg(&mut self, arg: &[u8]);
-
-    /// Accepts a serialized redis command.
-    fn write_arg_fmt(&mut self, arg: impl fmt::Display) {
-        self.write_arg(&arg.to_string().as_bytes())
-    }
 }
 
 impl RedisWrite for Vec<Vec<u8>> {
     fn write_arg(&mut self, arg: &[u8]) {
         self.push(arg.to_owned());
-    }
-
-    fn write_arg_fmt(&mut self, arg: impl fmt::Display) {
-        self.push(arg.to_string().into_bytes())
     }
 }
 
@@ -685,6 +603,16 @@ pub trait ToRedisArgs: Sized {
     fn is_single_vec_arg(items: &[Self]) -> bool {
         items.len() == 1 && items[0].is_single_arg()
     }
+}
+
+macro_rules! invalid_type_error {
+    ($v:expr, $det:expr) => {{
+        fail!((
+            ErrorKind::TypeError,
+            "Response was of incompatible type",
+            format!("{:?} (response was {:?})", $det, $v)
+        ));
+    }};
 }
 
 macro_rules! itoa_based_to_redis_impl {
@@ -979,10 +907,13 @@ pub trait FromRedisValue: Sized {
     /// from another vector of values.  This primarily exists internally
     /// to customize the behavior for vectors of tuples.
     fn from_redis_values(items: &[Value]) -> RedisResult<Vec<Self>> {
-        Ok(items
-            .iter()
-            .filter_map(|item| FromRedisValue::from_redis_value(item).ok())
-            .collect())
+        let mut rv = vec![];
+        for item in items.iter() {
+            if let Ok(val) = FromRedisValue::from_redis_value(item) {
+                rv.push(val);
+            }
+        }
+        Ok(rv)
     }
 
     /// This only exists internally as a workaround for the lack of
@@ -1094,10 +1025,17 @@ impl<K: FromRedisValue + Eq + Hash, V: FromRedisValue, S: BuildHasher + Default>
     for HashMap<K, V, S>
 {
     fn from_redis_value(v: &Value) -> RedisResult<HashMap<K, V, S>> {
-        v.as_map_iter()
-            .ok_or_else(|| invalid_type_error_inner!(v, "Response type not hashmap compatible"))?
-            .map(|(k, v)| Ok((from_redis_value(k)?, from_redis_value(v)?)))
-            .collect()
+        match *v {
+            Value::Bulk(ref items) => {
+                let mut rv = HashMap::default();
+                let mut iter = items.iter();
+                while let (Some(k), Some(v)) = (iter.next(), iter.next()) {
+                    rv.insert(from_redis_value(k)?, from_redis_value(v)?);
+                }
+                Ok(rv)
+            }
+            _ => invalid_type_error!(v, "Response type not hashmap compatible"),
+        }
     }
 }
 
@@ -1106,19 +1044,32 @@ where
     K: Ord,
 {
     fn from_redis_value(v: &Value) -> RedisResult<BTreeMap<K, V>> {
-        v.as_map_iter()
-            .ok_or_else(|| invalid_type_error_inner!(v, "Response type not btreemap compatible"))?
-            .map(|(k, v)| Ok((from_redis_value(k)?, from_redis_value(v)?)))
-            .collect()
+        match *v {
+            Value::Bulk(ref items) => {
+                let mut rv = BTreeMap::new();
+                let mut iter = items.iter();
+                while let (Some(k), Some(v)) = (iter.next(), iter.next()) {
+                    rv.insert(from_redis_value(k)?, from_redis_value(v)?);
+                }
+                Ok(rv)
+            }
+            _ => invalid_type_error!(v, "Response type not btreemap compatible"),
+        }
     }
 }
 
 impl<T: FromRedisValue + Eq + Hash, S: BuildHasher + Default> FromRedisValue for HashSet<T, S> {
     fn from_redis_value(v: &Value) -> RedisResult<HashSet<T, S>> {
-        let items = v
-            .as_sequence()
-            .ok_or_else(|| invalid_type_error_inner!(v, "Response type not hashset compatible"))?;
-        items.iter().map(|item| from_redis_value(item)).collect()
+        match *v {
+            Value::Bulk(ref items) => {
+                let mut rv = HashSet::default();
+                for item in items.iter() {
+                    rv.insert(from_redis_value(item)?);
+                }
+                Ok(rv)
+            }
+            _ => invalid_type_error!(v, "Response type not hashset compatible"),
+        }
     }
 }
 
@@ -1127,10 +1078,16 @@ where
     T: Ord,
 {
     fn from_redis_value(v: &Value) -> RedisResult<BTreeSet<T>> {
-        let items = v
-            .as_sequence()
-            .ok_or_else(|| invalid_type_error_inner!(v, "Response type not btreeset compatible"))?;
-        items.iter().map(|item| from_redis_value(item)).collect()
+        match *v {
+            Value::Bulk(ref items) => {
+                let mut rv = BTreeSet::new();
+                for item in items.iter() {
+                    rv.insert(from_redis_value(item)?);
+                }
+                Ok(rv)
+            }
+            _ => invalid_type_error!(v, "Response type not btreeset compatible"),
+        }
     }
 }
 
@@ -1189,11 +1146,10 @@ macro_rules! from_redis_value_for_tuple {
                 if items.len() == 0 {
                     return Ok(rv)
                 }
-                for chunk in items.chunks_exact(n) {
-                    match chunk {
-                        [$($name),*] => rv.push(($(from_redis_value($name)?),*),),
-                         _ => unreachable!(),
-                    }
+                let mut offset = 0;
+                while offset < items.len() - 1 {
+                    rv.push(($({let $name = (); from_redis_value(
+                         &items[{ offset += 1; offset - 1 }])?},)*));
                 }
                 Ok(rv)
             }

@@ -1,5 +1,5 @@
 use futures::{future, prelude::*};
-use redis::{aio::MultiplexedConnection, cmd, AsyncCommands, ErrorKind, RedisResult};
+use redis::{aio::MultiplexedConnection, AsyncCommands, RedisResult};
 
 use crate::support::*;
 
@@ -226,58 +226,6 @@ fn test_transaction_multiplexed_connection() {
     .unwrap();
 }
 
-fn test_async_scanning(batch_size: usize) {
-    let ctx = TestContext::new();
-    block_on_all(async move {
-        ctx.multiplexed_async_connection()
-            .and_then(|mut con| {
-                async move {
-                    let mut unseen = std::collections::HashSet::new();
-
-                    for x in 0..batch_size {
-                        redis::cmd("SADD")
-                            .arg("foo")
-                            .arg(x)
-                            .query_async(&mut con)
-                            .await?;
-                        unseen.insert(x);
-                    }
-
-                    let mut iter = redis::cmd("SSCAN")
-                        .arg("foo")
-                        .cursor_arg(0)
-                        .clone()
-                        .iter_async(&mut con)
-                        .await
-                        .unwrap();
-
-                    while let Some(x) = iter.next_item().await {
-                        // type inference limitations
-                        let x: usize = x;
-                        // if this assertion fails, too many items were returned by the iterator.
-                        assert!(unseen.remove(&x));
-                    }
-
-                    assert_eq!(unseen.len(), 0);
-                    Ok(())
-                }
-            })
-            .map_err(|err| panic!("{}", err))
-            .await
-    })
-    .unwrap();
-}
-
-#[test]
-fn test_async_scanning_big_batch() {
-    test_async_scanning(1000)
-}
-
-#[test]
-fn test_async_scanning_small_batch() {
-    test_async_scanning(2)
-}
-
 #[test]
 #[cfg(feature = "script")]
 fn test_script() {
@@ -329,82 +277,6 @@ fn test_script_returning_complex_type() {
             .await
     })
     .unwrap();
-}
-
-// Allowing `nth(0)` for similarity with the following `nth(1)`.
-// Allowing `let ()` as `query_async` requries the type it converts the result to.
-#[allow(clippy::let_unit_value, clippy::iter_nth_zero)]
-#[tokio::test]
-async fn io_error_on_kill_issue_320() {
-    let ctx = TestContext::new();
-
-    let mut conn_to_kill = ctx.async_connection().await.unwrap();
-    cmd("CLIENT")
-        .arg("SETNAME")
-        .arg("to-kill")
-        .query_async::<_, ()>(&mut conn_to_kill)
-        .await
-        .unwrap();
-
-    let client_list: String = cmd("CLIENT")
-        .arg("LIST")
-        .query_async(&mut conn_to_kill)
-        .await
-        .unwrap();
-
-    eprintln!("{}", client_list);
-    let client_to_kill = client_list
-        .split('\n')
-        .find(|line| line.contains("to-kill"))
-        .expect("line")
-        .split(' ')
-        .nth(0)
-        .expect("id")
-        .split('=')
-        .nth(1)
-        .expect("id value");
-
-    let mut killer_conn = ctx.async_connection().await.unwrap();
-    let () = cmd("CLIENT")
-        .arg("KILL")
-        .arg("ID")
-        .arg(client_to_kill)
-        .query_async(&mut killer_conn)
-        .await
-        .unwrap();
-    let mut killed_client = conn_to_kill;
-
-    let err = loop {
-        match killed_client.get::<_, Option<String>>("a").await {
-            // We are racing against the server being shutdown so try until we a get an io error
-            Ok(_) => tokio::time::delay_for(std::time::Duration::from_millis(50)).await,
-            Err(err) => break err,
-        }
-    };
-    assert_eq!(err.kind(), ErrorKind::IoError); // Shouldn't this be IoError?
-}
-
-#[tokio::test]
-async fn invalid_password_issue_343() {
-    let ctx = TestContext::new();
-    let coninfo = redis::ConnectionInfo {
-        addr: Box::new(ctx.server.get_client_addr().clone()),
-        db: 0,
-        username: None,
-        passwd: Some("asdcasc".to_string()),
-    };
-    let client = redis::Client::open(coninfo).unwrap();
-    let err = client
-        .get_multiplexed_tokio_connection()
-        .await
-        .err()
-        .unwrap();
-    assert_eq!(
-        err.kind(),
-        ErrorKind::AuthenticationFailed,
-        "Unexpected error: {}",
-        err
-    );
 }
 
 mod pub_sub {

@@ -1,7 +1,6 @@
 use redis::{self, transaction, Commands};
 
 use std::collections::HashMap;
-use std::env;
 
 /// This function demonstrates how a return value can be coerced into a
 /// hashmap of tuples.  This is particularly useful for responses like
@@ -135,9 +134,9 @@ fn do_atomic_increment(con: &mut redis::Connection) -> redis::RedisResult<()> {
 }
 
 /// Runs all the examples and propagates errors up.
-fn do_redis_code(url: &str) -> redis::RedisResult<()> {
+fn do_redis_code() -> redis::RedisResult<()> {
     // general connection handling
-    let client = redis::Client::open(url)?;
+    let client = redis::Client::open("redis://127.0.0.1/")?;
     let mut con = client.get_connection()?;
 
     // read some config and print it.
@@ -155,12 +154,7 @@ fn do_redis_code(url: &str) -> redis::RedisResult<()> {
 
 fn main() {
     // at this point the errors are fatal, let's just fail hard.
-    let url = if env::args().nth(1) == Some("--tls".into()) {
-        "rediss://127.0.0.1:6380/#insecure"
-    } else {
-        "redis://127.0.0.1:6379/"
-    };
-    match do_redis_code(url) {
+    match do_redis_code() {
         Err(err) => {
             println!("Could not execute example:");
             println!("  {}: {}", err.category(), err);

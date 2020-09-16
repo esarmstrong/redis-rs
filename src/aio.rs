@@ -10,7 +10,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::task::{self, Poll};
 
-use combine::{parser::combinator::AnySendSyncPartialState, stream::PointerOffset};
+use combine::{parser::combinator::AnySendPartialState, stream::PointerOffset};
 
 #[cfg(all(unix, feature = "tokio-comp"))]
 use tokio::net::UnixStream as UnixStreamTokio;
@@ -22,12 +22,6 @@ use tokio::{
 
 #[cfg(feature = "tokio-comp")]
 use tokio::net::TcpStream as TcpStreamTokio;
-
-#[cfg(feature = "tokio-tls-comp")]
-use tokio_tls::TlsStream as TlsStreamTokio;
-
-#[cfg(feature = "tls")]
-use native_tls::TlsConnector;
 
 #[cfg(any(feature = "tokio-comp", feature = "async-std-comp"))]
 use tokio_util::codec::Decoder;
@@ -58,16 +52,7 @@ use crate::aio_async_std;
 pub(crate) trait Connect {
     /// Performs a TCP connection
     async fn connect_tcp(socket_addr: SocketAddr) -> RedisResult<ActualConnection>;
-
-    // Performs a TCP TLS connection
-    #[cfg(feature = "tls")]
-    async fn connect_tcp_tls(
-        hostname: &str,
-        socket_addr: SocketAddr,
-        insecure: bool,
-    ) -> RedisResult<ActualConnection>;
-
-    /// Performs a UNIX connection
+    /// Performans an UNIX connection
     #[cfg(unix)]
     async fn connect_unix(path: &Path) -> RedisResult<ActualConnection>;
 }
@@ -75,9 +60,6 @@ pub(crate) trait Connect {
 #[cfg(feature = "tokio-comp")]
 mod tokio_aio {
     use super::{async_trait, ActualConnection, Connect, RedisResult, SocketAddr, TcpStreamTokio};
-
-    #[cfg(feature = "tls")]
-    use super::TlsConnector;
 
     #[cfg(unix)]
     use super::{Path, UnixStreamTokio};
@@ -90,27 +72,6 @@ mod tokio_aio {
             Ok(TcpStreamTokio::connect(&socket_addr)
                 .await
                 .map(ActualConnection::TcpTokio)?)
-        }
-        #[cfg(feature = "tls")]
-        async fn connect_tcp_tls(
-            hostname: &str,
-            socket_addr: SocketAddr,
-            insecure: bool,
-        ) -> RedisResult<ActualConnection> {
-            let tls_connector: tokio_tls::TlsConnector = if insecure {
-                TlsConnector::builder()
-                    .danger_accept_invalid_certs(true)
-                    .danger_accept_invalid_hostnames(true)
-                    .use_sni(false)
-                    .build()?
-            } else {
-                TlsConnector::new()?
-            }
-            .into();
-            Ok(tls_connector
-                .connect(hostname, TcpStreamTokio::connect(&socket_addr).await?)
-                .await
-                .map(ActualConnection::TcpTlsTokio)?)
         }
         #[cfg(unix)]
         async fn connect_unix(path: &Path) -> RedisResult<ActualConnection> {
@@ -126,9 +87,6 @@ pub(crate) enum ActualConnection {
     /// Represents a Tokio TCP connection.
     #[cfg(feature = "tokio-comp")]
     TcpTokio(TcpStreamTokio),
-    /// Represents a Tokio TLS encrypted TCP connection
-    #[cfg(feature = "tokio-tls-comp")]
-    TcpTlsTokio(TlsStreamTokio<TcpStreamTokio>),
     /// Represents a Tokio Unix connection.
     #[cfg(unix)]
     #[cfg(feature = "tokio-comp")]
@@ -136,9 +94,6 @@ pub(crate) enum ActualConnection {
     /// Represents an Async_std TCP connection.
     #[cfg(feature = "async-std-comp")]
     TcpAsyncStd(aio_async_std::TcpStreamAsyncStdWrapped),
-    /// Represents an Async_std TLS encrypted TCP connection.
-    #[cfg(feature = "async-std-tls-comp")]
-    TcpTlsAsyncStd(aio_async_std::TlsStreamAsyncStdWrapped),
     /// Represents an Async_std Unix connection.
     #[cfg(feature = "async-std-comp")]
     #[cfg(unix)]
@@ -154,15 +109,11 @@ impl AsyncWrite for ActualConnection {
         match &mut *self {
             #[cfg(feature = "tokio-comp")]
             ActualConnection::TcpTokio(r) => Pin::new(r).poll_write(cx, buf),
-            #[cfg(feature = "tokio-tls-comp")]
-            ActualConnection::TcpTlsTokio(r) => Pin::new(r).poll_write(cx, buf),
             #[cfg(unix)]
             #[cfg(feature = "tokio-comp")]
             ActualConnection::UnixTokio(r) => Pin::new(r).poll_write(cx, buf),
             #[cfg(feature = "async-std-comp")]
             ActualConnection::TcpAsyncStd(r) => Pin::new(r).poll_write(cx, buf),
-            #[cfg(feature = "async-std-tls-comp")]
-            ActualConnection::TcpTlsAsyncStd(r) => Pin::new(r).poll_write(cx, buf),
             #[cfg(feature = "async-std-comp")]
             #[cfg(unix)]
             ActualConnection::UnixAsyncStd(r) => Pin::new(r).poll_write(cx, buf),
@@ -173,15 +124,11 @@ impl AsyncWrite for ActualConnection {
         match &mut *self {
             #[cfg(feature = "tokio-comp")]
             ActualConnection::TcpTokio(r) => Pin::new(r).poll_flush(cx),
-            #[cfg(feature = "tokio-tls-comp")]
-            ActualConnection::TcpTlsTokio(r) => Pin::new(r).poll_flush(cx),
             #[cfg(unix)]
             #[cfg(feature = "tokio-comp")]
             ActualConnection::UnixTokio(r) => Pin::new(r).poll_flush(cx),
             #[cfg(feature = "async-std-comp")]
             ActualConnection::TcpAsyncStd(r) => Pin::new(r).poll_flush(cx),
-            #[cfg(feature = "async-std-tls-comp")]
-            ActualConnection::TcpTlsAsyncStd(r) => Pin::new(r).poll_flush(cx),
             #[cfg(feature = "async-std-comp")]
             #[cfg(unix)]
             ActualConnection::UnixAsyncStd(r) => Pin::new(r).poll_flush(cx),
@@ -192,15 +139,11 @@ impl AsyncWrite for ActualConnection {
         match &mut *self {
             #[cfg(feature = "tokio-comp")]
             ActualConnection::TcpTokio(r) => Pin::new(r).poll_shutdown(cx),
-            #[cfg(feature = "tokio-tls-comp")]
-            ActualConnection::TcpTlsTokio(r) => Pin::new(r).poll_shutdown(cx),
             #[cfg(unix)]
             #[cfg(feature = "tokio-comp")]
             ActualConnection::UnixTokio(r) => Pin::new(r).poll_shutdown(cx),
             #[cfg(feature = "async-std-comp")]
             ActualConnection::TcpAsyncStd(r) => Pin::new(r).poll_shutdown(cx),
-            #[cfg(feature = "async-std-tls-comp")]
-            ActualConnection::TcpTlsAsyncStd(r) => Pin::new(r).poll_shutdown(cx),
             #[cfg(feature = "async-std-comp")]
             #[cfg(unix)]
             ActualConnection::UnixAsyncStd(r) => Pin::new(r).poll_shutdown(cx),
@@ -217,15 +160,11 @@ impl AsyncRead for ActualConnection {
         match &mut *self {
             #[cfg(feature = "tokio-comp")]
             ActualConnection::TcpTokio(r) => Pin::new(r).poll_read(cx, buf),
-            #[cfg(feature = "tokio-tls-comp")]
-            ActualConnection::TcpTlsTokio(r) => Pin::new(r).poll_read(cx, buf),
             #[cfg(unix)]
             #[cfg(feature = "tokio-comp")]
             ActualConnection::UnixTokio(r) => Pin::new(r).poll_read(cx, buf),
             #[cfg(feature = "async-std-comp")]
             ActualConnection::TcpAsyncStd(r) => Pin::new(r).poll_read(cx, buf),
-            #[cfg(feature = "async-std-tls-comp")]
-            ActualConnection::TcpTlsAsyncStd(r) => Pin::new(r).poll_read(cx, buf),
             #[cfg(feature = "async-std-comp")]
             #[cfg(unix)]
             ActualConnection::UnixAsyncStd(r) => Pin::new(r).poll_read(cx, buf),
@@ -284,19 +223,6 @@ impl PubSub {
             .filter_map(|msg| Box::pin(async move { Msg::from_value(&msg.ok()?) }))
     }
 
-    /// Returns [`Stream`] of [`Msg`]s from this [`PubSub`]s subscriptions consuming it.
-    ///
-    /// The message itself is still generic and can be converted into an appropriate type through
-    /// the helper methods on it.
-    /// This can be useful in cases where the stream needs to be returned or held by something other
-    //  than the [`PubSub`].
-    pub fn into_on_message(self) -> impl Stream<Item = Msg> {
-        ValueCodec::default()
-            .framed(self.0.con)
-            .into_stream()
-            .filter_map(|msg| Box::pin(async move { Msg::from_value(&msg.ok()?) }))
-    }
-
     /// Exits from `PubSub` mode and converts [`PubSub`] into [`Connection`].
     pub async fn into_connection(mut self) -> Connection {
         self.0.exit_pubsub().await.ok();
@@ -309,7 +235,7 @@ impl PubSub {
 pub struct Connection {
     con: ActualConnection,
     buf: Vec<u8>,
-    decoder: combine::stream::Decoder<AnySendSyncPartialState, PointerOffset<[u8]>>,
+    decoder: combine::stream::Decoder<AnySendPartialState, PointerOffset<[u8]>>,
     db: i64,
 
     /// Flag indicating whether the connection was left in the PubSub state after dropping `PubSub`.
@@ -317,13 +243,6 @@ pub struct Connection {
     /// This flag is checked when attempting to send a command, and if it's raised, we attempt to
     /// exit the pubsub state before executing the new request.
     pubsub: bool,
-}
-
-fn assert_sync<T: Sync>() {}
-
-#[allow(unused)]
-fn test() {
-    assert_sync::<Connection>();
 }
 
 impl Connection {
@@ -441,11 +360,7 @@ where
     C: ConnectionLike,
 {
     if let Some(passwd) = &connection_info.passwd {
-        let mut command = cmd("AUTH");
-        if let Some(username) = &connection_info.username {
-            command.arg(username);
-        }
-        match command.arg(passwd).query_async(con).await {
+        match cmd("AUTH").arg(passwd).query_async(con).await {
             Ok(Value::Okay) => (),
             _ => {
                 fail!((
@@ -475,25 +390,8 @@ async fn connect_simple<T: Connect>(
     Ok(match *connection_info.addr {
         ConnectionAddr::Tcp(ref host, port) => {
             let socket_addr = get_socket_addrs(host, port)?;
+
             <T>::connect_tcp(socket_addr).await?
-        }
-
-        #[cfg(feature = "tls")]
-        ConnectionAddr::TcpTls {
-            ref host,
-            port,
-            insecure,
-        } => {
-            let socket_addr = get_socket_addrs(host, port)?;
-            <T>::connect_tcp_tls(host, socket_addr, insecure).await?
-        }
-
-        #[cfg(not(feature = "tls"))]
-        ConnectionAddr::TcpTls { .. } => {
-            fail!((
-                ErrorKind::InvalidClientConfig,
-                "Cannot connect to TCP with TLS without the tls feature"
-            ));
         }
 
         #[cfg(unix)]
@@ -522,7 +420,7 @@ fn get_socket_addrs(host: &str, port: u16) -> RedisResult<SocketAddr> {
 }
 
 /// An async abstraction over connections.
-pub trait ConnectionLike {
+pub trait ConnectionLike: Sized {
     /// Sends an already encoded (packed) command into the TCP socket and
     /// reads the single response from it.
     fn req_packed_command<'a>(&'a mut self, cmd: &'a Cmd) -> RedisFuture<'a, Value>;
@@ -874,20 +772,8 @@ impl MultiplexedConnection {
                 let (pipeline, driver) = Pipeline::new(codec);
                 (pipeline, boxed(driver))
             }
-            #[cfg(feature = "tokio-tls-comp")]
-            ActualConnection::TcpTlsTokio(tls) => {
-                let codec = ValueCodec::default().framed(tls);
-                let (pipeline, driver) = Pipeline::new(codec);
-                (pipeline, boxed(driver))
-            }
             #[cfg(feature = "async-std-comp")]
             ActualConnection::TcpAsyncStd(tcp) => {
-                let codec = ValueCodec::default().framed(tcp);
-                let (pipeline, driver) = Pipeline::new(codec);
-                (pipeline, boxed(driver))
-            }
-            #[cfg(feature = "async-std-tls-comp")]
-            ActualConnection::TcpTlsAsyncStd(tcp) => {
                 let codec = ValueCodec::default().framed(tcp);
                 let (pipeline, driver) = Pipeline::new(codec);
                 (pipeline, boxed(driver))
@@ -912,20 +798,7 @@ impl MultiplexedConnection {
             pipeline,
             db: connection_info.db,
         };
-        let driver = {
-            let auth = authenticate(connection_info, &mut con);
-            futures_util::pin_mut!(auth);
-
-            match futures_util::future::select(auth, driver).await {
-                futures_util::future::Either::Left((result, driver)) => {
-                    result?;
-                    driver
-                }
-                futures_util::future::Either::Right(((), _)) => {
-                    unreachable!("Multiplexed connection driver unexpectedly terminated")
-                }
-            }
-        };
+        authenticate(connection_info, &mut con).await?;
         Ok((con, driver))
     }
 }

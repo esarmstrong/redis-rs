@@ -13,7 +13,7 @@ The crate is called `redis` and you can depend on it via cargo:
 
 ```ini
 [dependencies]
-redis = "0.17.0"
+redis = "0.16.0"
 ```
 
 Documentation on the library can be found at
@@ -47,29 +47,6 @@ fn fetch_an_integer() -> redis::RedisResult<isize> {
 }
 ```
 
-## Cluster Support
-
-Cluster mode can be used by specifying "cluster" as a features entry in your Cargo.toml.
-
-`redis = { version = "0.16.0", features = [ "cluster"] }`
-
-Then you can simply use the `ClusterClient` which accepts a list of available nodes.
-
-```rust
-use redis::cluster::ClusterClient;
-use redis::Commands;
-
-fn fetch_an_integer() -> String {
-    // connect to redis
-    let nodes = vec!["redis://127.0.0.1/"];
-    let client = ClusterClient::open(nodes).unwrap();
-    let mut connection = client.get_connection().unwrap();
-    let _: () = connection.set("test", "test_data").unwrap();
-    let rv: String = connection.get("test").unwrap();
-    return rv;
-}
-```
-
 ## Development
 
 If you want to develop on the library there are a few commands provided
@@ -90,10 +67,6 @@ To run benchmarks:
 To build the docs:
 
     $ make docs
-
-We encourage you to run `clippy` prior to seeking a merge for your work.  The lints can be quite strict.  Running this on your own workstation can save you time, since Travis CI will fail any build that doesn't satisfy `clippy`:
-
-    $ cargo clippy --all-features --all --tests --examples -- -D clippy::all -D warnings
 
 To run fuzz tests with afl, first install cargo-afl (`cargo install -f afl`),
 then run:

@@ -12,15 +12,6 @@ cache:
 before_cache:
   - rm -rf /home/travis/.cargo/registry
 
-before_install: |
-  sudo apt-get update
-  sudo apt-get install stunnel -y
-
-install: |
-  wget https://github.com/redis/redis/archive/6.0.6.tar.gz;
-  tar -xzvf 6.0.6.tar.gz;
-  pushd redis-6.0.6 && BUILD_TLS=yes make && export PATH=$PWD/src:$PATH && popd;
-
 matrix:
   include:
     - rust: stable
@@ -49,3 +40,10 @@ script:
 
 notifications:
   email: false
+  irc:
+    channels:
+      - "chat.freenode.net#pocoo"
+    on_success: change
+    on_failure: always
+    use_notice: true
+    skip_join: true
