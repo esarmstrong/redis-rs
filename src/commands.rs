@@ -219,6 +219,7 @@ implement_commands! {
 
     /// Set json value of a key.
     fn set_json<>(key: String, path: String, value: String) {
+        println!("JSON.SET {} {} {}", key, path, value);
         &mut cmd(&(format!("JSON.SET {} {} {}", key, path, value)))
     }
 
