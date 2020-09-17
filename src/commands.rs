@@ -219,7 +219,7 @@ implement_commands! {
 
     /// Set json value of a key.
     fn set_json<V: ToRedisArgs>(key: String, path: String, value: V) {
-        &mut cmd(&(format!("JSON.SET {} {}", key, path))).arg(value);
+        cmd(&(format!("JSON.SET {} {}", key, path))).arg(value);
     }
 
     /// Sets multiple keys to their values.
