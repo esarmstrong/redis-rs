@@ -220,7 +220,7 @@ implement_commands! {
     /// Set json value of a key.
     fn set_json<>(key: String, path: String, value: String) {
         dbg!("JSON.SET {} {} {}", key.clone(), path.clone(), value.clone());
-        &mut cmd(&(format!("JSON.SET {} {} {}", key, path, value)))
+        &mut cmd(&(format!("JSON.SET {} {} '\"{}\"'", key, path, value)))
     }
 
     /// Sets multiple keys to their values.
