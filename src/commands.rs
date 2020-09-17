@@ -219,7 +219,7 @@ implement_commands! {
 
     /// Set json value of a key.
     fn set_json<>() {
-        cmd("JSON.SET foo . '\"bar\"'")
+        &mut cmd("JSON.SET foo . '\"bar\"'")
     }
 
     /// Sets multiple keys to their values.
