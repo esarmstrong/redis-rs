@@ -207,6 +207,11 @@ implement_commands! {
         cmd(if key.is_single_arg() { "GET" } else { "MGET" }).arg(key)
     }
 
+    /// Get json value of a key.
+    fn get_json<K: ToRedisArgs, P: ToRedisArgs>(key: K, path: P) {
+        cmd("JSON.GET").arg(key).arg(path)
+    }
+
     /// Gets all keys matching pattern
     fn keys<K: ToRedisArgs>(key: K) {
         cmd("KEYS").arg(key)
@@ -218,8 +223,8 @@ implement_commands! {
     }
 
     /// Set json value of a key.
-    fn set_json<>() {
-        &mut cmd("JSON.SET foo . '\"bar\"'")
+    fn set_json<K: ToRedisArgs, V: ToRedisArgs, P: ToRedisArgs>(key: K, path: P, value: V) {
+        cmd("JSON.SET").arg(key).arg(path).arg(value)
     }
 
     /// Sets multiple keys to their values.
